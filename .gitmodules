@@ -1,0 +1,8 @@
+[submodule "libraries/EspTinyUSB"]
+	path = libraries/ESP32TinyUSB
+	url = https://github.com/kwirk/EspTinyUSB
+	branch = read_only_msc
+[submodule "libraries/TFT_eSPI"]
+	path = libraries/TFT_eSPI
+	url = https://github.com/kwirk/TFT_eSPI.git
+	branch = T-Dongle-ESP32S2
