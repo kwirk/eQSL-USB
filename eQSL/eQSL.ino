@@ -1,7 +1,9 @@
 #include "pin_config.h"
 #include "eqsl.h"
+#include <dirent.h>
 #include <TFT_eSPI.h>
-#include <sdusb.h>
+#include <FastLED.h>
+#include "sdcard.hpp"
 #include <IniFile.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
@@ -12,8 +14,9 @@
 
 #define CONFIG_FATFS_LONG_FILENAMES FATFS_LFN_STACK
 
-
 TFT_eSPI tft = TFT_eSPI();
+CRGB leds;
+using namespace esptinyusb;
 SDCard2USB dev;
 
 const char *ntpServer1 = "0.pool.ntp.org";
@@ -23,8 +26,8 @@ const int daylightOffset_sec = 0;
 
 char eqsl_callsign[21] = "";
 char eqsl_password[51] = "";
-uint8_t eqsl_rcvd_period = 14;
-uint8_t eqsl_update_interval = 60;
+int eqsl_rcvd_period = 14;
+int eqsl_update_interval = 60;
 
 uint8_t updated_images = 0;
 std::vector<String> valid_filenames;
@@ -32,13 +35,13 @@ std::vector<String> valid_filenames;
 void TFT_sleep() {
   tft.writecommand(0x10); // Sleep
   delay(200); // needed!
-  ledcWrite(0, 0); // Backlight off
+  digitalWrite(TFT_BL, HIGH); // Backlight off
 }
 
 void TFT_wake() {
   tft.writecommand(0x11); // Wake up
   delay(200); // needed!
-  ledcWrite(0, 255); // Backlight on
+  digitalWrite(TFT_BL, LOW); // Backlight on
 }
 
 void TFT_reset() {
@@ -89,49 +92,31 @@ void sd_card_setup()
 {
   TFT_reset();
   tft.println("Initializes the SD Card");
-  
-  if(!dev.initSD(SD_PIN_NUM_CLK, SD_PIN_NUM_MISO, SD_PIN_NUM_MOSI, SD_PIN_NUM_CS))
+
+  dev.initPins(SD_MMC_CMD_PIN, SD_MMC_CLK_PIN, SD_MMC_D0_PIN, SD_MMC_D1_PIN, SD_MMC_D2_PIN, SD_MMC_D3_PIN); // sd_mmc
+
+  if(!dev.partition("/sdcard"))
   {
+    leds = CRGB::Red;
+    FastLED.show();
     tft.setTextColor(TFT_RED, TFT_BLACK);
+    tft.println("No SD_MMC card attached");
     tft.println("Failed to init SD");
     // Cannot do anything else
     while (1)
       ;
   }
 
-  uint8_t cardType = SD.cardType();
-
-  if (cardType == CARD_NONE)
-  {
-    tft.setTextColor(TFT_RED, TFT_BLACK);
-    tft.println("No SD_MMC card attached");
-    // Cannot do anything else
-    while (1)
-      ;
-  }
-
-  tft.print("SD_MMC Card Type: ");
-  if (cardType == CARD_MMC)
-    tft.println("MMC");
-  else if (cardType == CARD_SD)
-    tft.println("SDSC");
-  else if (cardType == CARD_SDHC)
-    tft.println("SDHC");
-  else
-    tft.println("UNKNOWN");
-
   if(!dev.begin()) 
   {
+    leds = CRGB::Red;
+    FastLED.show();
     tft.setTextColor(TFT_RED, TFT_BLACK);
     tft.println("Failed to init USB");
     // Cannot do anything else
     while (1)
       ;
   }
-
-  uint32_t cardSize = SD.cardSize() / (1024 * 1024);
-  String str = "SDCard Size: " + String(cardSize) + "MB";
-  tft.println(str);
 }
 
 void wifi_setup()
@@ -141,10 +126,12 @@ void wifi_setup()
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
   delay(100);
-  
-  const char *filename = "/config.ini";
+
+  const char *filename = "/sdcard/config.ini";
   IniFile ini(filename);
   if (!ini.open()) {
+    leds = CRGB::Red;
+    FastLED.show();
     tft.print("Ini file ");
     tft.print(filename);
     tft.println(" does not exist");
@@ -159,6 +146,9 @@ void wifi_setup()
 
   // Fetch a value from a key which is present
   if (!ini.getValue("wifi", "ssid", ssid, bufferLen)) {
+    leds = CRGB::Red;
+    FastLED.show();
+    tft.setTextColor(TFT_RED, TFT_BLACK);
     tft.println("Could not read 'ssid' from section 'wifi', error was ");
     printErrorMessage(ini.getError());
     while (1)
@@ -166,13 +156,16 @@ void wifi_setup()
   }
   // Fetch a value from a key which is present
   if (!ini.getValue("wifi", "password", password, bufferLen)) {
+    leds = CRGB::Red;
+    FastLED.show();
+    tft.setTextColor(TFT_RED, TFT_BLACK);
     tft.println("Could not read 'password' from section 'wifi', error was ");
     printErrorMessage(ini.getError());
     while (1)
       ;
   }
   ini.close();
-  
+
   tft.print("Connecting to ");
   tft.println(ssid);
   WiFi.begin(ssid, password);
@@ -183,13 +176,14 @@ void wifi_setup()
   }
   tft.println("");
   tft.println("WiFi connected");
-  tft.print("IP address: ");
+  tft.print("IP: ");
   tft.println(WiFi.localIP());
 
 }
 
 void sync_time()
 {
+  TFT_reset();
   struct tm timeinfo;
   // Synchronize RTC time
   tft.println("Synchronize RTC time");
@@ -204,10 +198,12 @@ void sync_time()
 void eqsl_setup()
 {
   TFT_reset();
-  
-  const char *filename = "/config.ini";
+
+  const char *filename = "/sdcard/config.ini";
   IniFile ini(filename);
   if (!ini.open()) {
+    leds = CRGB::Red;
+    FastLED.show();
     tft.setTextColor(TFT_RED, TFT_BLACK);
     tft.print("Ini file ");
     tft.print(filename);
@@ -219,6 +215,8 @@ void eqsl_setup()
 
   // Fetch a value from a key which is present
   if (!ini.getValue("eqsl", "callsign", eqsl_callsign, sizeof(eqsl_callsign))) {
+    leds = CRGB::Red;
+    FastLED.show();
     tft.setTextColor(TFT_RED, TFT_BLACK);
     tft.print("Could not read 'callsign' from section 'eqsl', error was ");
     printErrorMessage(ini.getError());
@@ -227,6 +225,8 @@ void eqsl_setup()
   }
   // Fetch a value from a key which is present
   if (!ini.getValue("eqsl", "password", eqsl_password, sizeof(eqsl_password))) {
+    leds = CRGB::Red;
+    FastLED.show();
     tft.setTextColor(TFT_RED, TFT_BLACK);
     tft.print("Could not read 'password' from section 'eqsl', error was ");
     printErrorMessage(ini.getError());
@@ -254,11 +254,11 @@ void eqsl_setup()
     tft.setTextColor(TFT_GREEN, TFT_BLACK);
     delay(1000);
   }
-  
+
   ini.close();
 }
 
-    
+
 void handle_qsl_match(const char * match,
                       const unsigned int length,
                       const MatchState & ms)
@@ -297,11 +297,12 @@ void handle_qsl_match(const char * match,
   image_filename += ".JPG";
   image_filename.replace("/", "_");
 
-  String image_path = "/";
+  String image_path = "/sdcard/";
   image_path += image_filename;
   valid_filenames.push_back(image_filename);
 
-  if (SD.exists(image_path.c_str()))
+  struct stat st;
+  if (stat(image_path.c_str(), &st) == 0)
   {
     // Already downloaded this image.
     return;
@@ -344,10 +345,12 @@ void handle_qsl_match(const char * match,
   qsl_http.setReuse(false);
   qsl_http.begin(qsl_url, ROOT_CA);
   qsl_http.setTimeout(30000);
-  
+
   int qsl_httpCode = qsl_http.GET();
   if (qsl_httpCode != HTTP_CODE_OK)
   {
+    leds = CRGB::Red;
+    FastLED.show();
     tft.setTextColor(TFT_RED, TFT_BLACK);
     tft.println("Error fetching eQSL card");
     tft.print("HTTP Code: ");
@@ -356,12 +359,14 @@ void handle_qsl_match(const char * match,
     delay(5000);
     return;
   }
- 
+
   String qsl_payload = qsl_http.getString();
   qsl_http.end();
 
   if(qsl_payload.indexOf("Error:") > 0)
   {
+    leds = CRGB::Red;
+    FastLED.show();
     tft.setTextColor(TFT_RED, TFT_BLACK);
     tft.println(qsl_payload);
     delay(5000);
@@ -373,12 +378,14 @@ void handle_qsl_match(const char * match,
   char result = img_ms.Match("<img src=\"([^\"]+)\"");
   if (result != REGEXP_MATCHED)
   {
+    leds = CRGB::Red;
+    FastLED.show();
     tft.setTextColor(TFT_RED, TFT_BLACK);
     tft.println("Error finding eQSL card link");
     delay(5000);
     return;
   }
-  
+
   char match_buffer[100];
   String image_url = EQSL_BASE_URL;
   image_url += img_ms.GetCapture(match_buffer, 0);
@@ -387,10 +394,12 @@ void handle_qsl_match(const char * match,
   image_http.setReuse(false);
   image_http.begin(image_url, ROOT_CA);
   image_http.setTimeout(30000);
-    
+
   int image_httpCode = image_http.GET();
   if (image_httpCode != HTTP_CODE_OK)
   {
+    leds = CRGB::Red;
+    FastLED.show();
     tft.setTextColor(TFT_RED, TFT_BLACK);
     tft.println("Error fetching eQSL card");
     tft.print("HTTP Code: ");
@@ -400,17 +409,17 @@ void handle_qsl_match(const char * match,
     return;
   }
   WiFiClient * stream = image_http.getStreamPtr();
-  
+
   int len = image_http.getSize();  // -1 no size delcared
   uint8_t buff[2048] = {0};
-  File image_file = SD.open(image_path, FILE_WRITE);
+  FILE *image_file = fopen(image_path.c_str(), "w");
   while (image_http.connected() && (len > 0 || len == -1))
   {
       size_t size = stream->available();
       if (size) 
       {
         int c = stream->readBytes(buff, ((size > sizeof(buff)) ? sizeof(buff) : size));
-        image_file.write(buff, c);
+        fwrite(buff, 1, c, image_file);
         if (len > 0) {
           len -= c;
         }
@@ -418,35 +427,31 @@ void handle_qsl_match(const char * match,
       delay(1);
   }
   updated_images += 1;
-  image_file.close();
+  fclose(image_file);
   image_http.end();
 }
 
 void setup(void)
 {
-  pinMode(LED_PIN, OUTPUT);
-  digitalWrite(LED_PIN, HIGH);
+  FastLED.addLeds<APA102, LED_DI_PIN, LED_CI_PIN, BGR>(&leds, 1);
+  FastLED.setBrightness(10);
+  leds = CRGB::Green;
+  FastLED.show();
 
   tft.init();
   tft.setRotation(1);
-  tft.setSwapBytes(true);
   tft.setTextFont(2);
   TFT_reset();
 
-  ledcSetup(0, 4000, 8);
-  ledcAttachPin(TFT_BL, 0);
-  for (int dutyCycle = 0; dutyCycle <= 255; dutyCycle = dutyCycle + 5)
-  {
-    ledcWrite(0, dutyCycle);
-    delay(5);
-  }
+  pinMode(TFT_BL, OUTPUT);
+  digitalWrite(TFT_BL, LOW);
 
   sd_card_setup();
   delay(3000);
   wifi_setup();
   delay(1000);
   sync_time();
-  
+
   eqsl_setup();
   delay(1000);
 }
@@ -457,13 +462,14 @@ void loop()
   tft.print("Fetching eQSL cards for ");
   tft.println(eqsl_callsign);
   tft.print(".");
-  
+
   struct tm timeinfo;
   if (!getLocalTime(&timeinfo))
   {
+    leds = CRGB::Red;
+    FastLED.show();
     tft.setTextColor(TFT_RED, TFT_BLACK);
     tft.println("Error getting time");
-
     delay(5000);
     return;
   }
@@ -473,13 +479,14 @@ void loop()
   char rcvd_since[13];
   if (!strftime(rcvd_since, 13, "%Y%m%d%H%M", &timeinfo))
   {
+    leds = CRGB::Red;
+    FastLED.show();
     tft.setTextColor(TFT_RED, TFT_BLACK);
     tft.println("Error formatting rcvd since time");
-
     delay(5000);
     return;
   }
-  
+
   HTTPClient http;
   http.setReuse(false);
   String url = EQSL_BASE_URL;
@@ -493,39 +500,44 @@ void loop()
   url += "&ConfirmedOnly=1";
 
   http.begin(url, ROOT_CA);
-    
+
   int httpCode = http.GET();
   if (httpCode != HTTP_CODE_OK)
   {
+    leds = CRGB::Red;
+    FastLED.show();
     tft.setTextColor(TFT_RED, TFT_BLACK);
     tft.println("Error fetching Inbox");
     tft.print("HTTP Code: ");
     tft.println(httpCode);
-    
+
     http.end();
     delay(5000);
     return;
   }
-  
+
   String payload = http.getString();
   http.end();
 
   if(payload.indexOf("Your ADIF log file has been built") < 0)
   {
+    leds = CRGB::Red;
+    FastLED.show();
     tft.setTextColor(TFT_RED, TFT_BLACK);
     tft.println("Error getting ADIF link from eQSL");
     delay(5000);
     return;
   }
-  
+
   MatchState ms;
   ms.Target(const_cast<char*>(payload.c_str()));
   char result = ms.Match("<A HREF=\"%.%.(/[^\"]+)\">%.ADI file</A>");
   if (result != REGEXP_MATCHED)
   {
+    leds = CRGB::Red;
+    FastLED.show();
     tft.setTextColor(TFT_RED, TFT_BLACK);
     tft.println("Error finding ADIF link from eQSL");
-
     delay(5000);
     return;
   }
@@ -542,18 +554,20 @@ void loop()
   int adif_httpCode = adif_http.GET();
   if (adif_httpCode != HTTP_CODE_OK)
   {
+    leds = CRGB::Red;
+    FastLED.show();
     tft.setTextColor(TFT_RED, TFT_BLACK);
     tft.println("Error fetching ADIF file");
     tft.print("HTTP Code: ");
     tft.println(adif_httpCode);
-    
+
     adif_http.end();
     delay(5000);
     return;
   }
   String adif = adif_http.getString();
   adif_http.end();
-  
+
   updated_images = 0;
   uint8_t eqsl_count;
   MatchState qsl_ms;
@@ -561,30 +575,29 @@ void loop()
   eqsl_count = qsl_ms.GlobalMatch(QSO_RE, handle_qsl_match);
 
   uint8_t removed_images = 0;
-  File root = SD.open("/");
+  DIR *root = opendir("/sdcard");
   while (true) {
-    File entry =  root.openNextFile();
+    struct dirent *entry = readdir(root);
     if (!entry)
     {
       // no more files
       break;
     }
-    if ( (strcmp(entry.name(), "config.ini") == 0) || (entry.isDirectory()) )
+    if ( (strcmp(entry->d_name, "config.ini") == 0) || (entry->d_type == DT_DIR) )
     {
-      entry.close();
       continue;
     }
-    if (std::find(valid_filenames.begin(), valid_filenames.end(), entry.name()) == valid_filenames.end())
+    if (std::find(valid_filenames.begin(), valid_filenames.end(), entry->d_name) == valid_filenames.end())
     {
-      String entry_path = "/";
-      entry_path += entry.name();
-      entry.close();
-      if (SD.remove(entry_path))
+      String entry_path = "/sdcard/";
+      entry_path += entry->d_name;
+      if (remove(entry_path.c_str()) == 0)
       {
         removed_images++;
       }
     }
   }
+  closedir(root);
 
   TFT_reset();
   tft.print("Processed ");
@@ -596,16 +609,22 @@ void loop()
   tft.print("Removed ");
   tft.print(removed_images);
   tft.println(" old eQSL cards.");
-  delay(10000);
-  
+
   if ( (updated_images > 0) || (removed_images > 0) ) {
     // Need to restart for USB interface
+    dev.end();
+    delay(10000);
     esp_restart();
   }
+  delay(10000);
 
   TFT_reset();
   TFT_sleep();
-  digitalWrite(LED_PIN, LOW);
+  leds = CRGB::Black;
+  FastLED.show();
   delay(eqsl_update_interval*60000);
+
   TFT_wake();
+  leds = CRGB::Green;
+  FastLED.show();
 }

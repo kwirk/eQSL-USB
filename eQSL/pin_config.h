@@ -1,13 +1,13 @@
 #pragma once
 
-#define TFT_BL 33
+#define TFT_BL 38
 
-#define SD_PIN_NUM_MISO 13
-#define SD_PIN_NUM_MOSI 11
-#define SD_PIN_NUM_CLK 12
-#define SD_PIN_NUM_CS 10
+#define SD_MMC_D0_PIN  14
+#define SD_MMC_D1_PIN  17
+#define SD_MMC_D2_PIN  21
+#define SD_MMC_D3_PIN  18
+#define SD_MMC_CLK_PIN 12
+#define SD_MMC_CMD_PIN 16
 
-#define LED_PIN 39
-
-#define IIC_SDA 44
-#define IIC_SCL 43
+#define LED_DI_PIN 40
+#define LED_CI_PIN 39
