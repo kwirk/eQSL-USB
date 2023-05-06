@@ -61,7 +61,7 @@ And other libraries without modification (version numbers as tested, may work wi
 
 ## License
 
-Copyright (C) 2022 Steven Hiscocks
+Copyright (C) 2022 Steven Hiscocks (M1SDH)
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
